@@ -76,20 +76,20 @@
     display:block;
     position:relative;
 
-    &:before{
+   /* &:before{
         position:absolute;
         display:none;
         content:attr(title);
     }
-
-    &:hover{
+*/
+   /* &:hover{
         visibility:hidden;
 
         &:before{
             visibility:visible;
             display:block;
         }
-    }
+    }*/
 }
 
 /* makes a link look like regular text */

@@ -118,4 +118,7 @@ $(function(){
             });
         }
     }
+
+    /* Tooltips */
+    $('.tip').tooltip({delay:250});
 });
