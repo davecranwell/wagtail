@@ -7,6 +7,7 @@ $tooltip-arrow-color:         $tooltip-bg;
 $tooltip-zindex:              20;
 
 .tooltip {
+    font-size:0.9em;
     position: absolute;
     z-index: $tooltip-zindex;
     display: block;
