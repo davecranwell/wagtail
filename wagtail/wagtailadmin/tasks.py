@@ -29,6 +29,16 @@ if NO_CELERY or not hasattr(settings, 'BROKER_URL'):
         f.delay=f
         return f
 
+class Email(object):
+    def __init__(self, register_hook_name, construct_hook_name=None):
+        self.register_hook_name = register_hook_name
+        self.construct_hook_name = construct_hook_name
+        # _registered_menu_items will be populated on first access to the
+        # registered_menu_items property. We can't populate it in __init__ because
+        # we can't rely on all hooks modules to have been imported at the point that
+        # we create the admin_menu and settings_menu instances
+        self._registered_menu_items = None
+
 def users_with_page_permission(page, permission_type, include_superusers=True):
     # Get user model
     User = get_user_model()
@@ -71,8 +81,12 @@ def send_notification(page_revision_id, notification, excluded_user_id):
         return
 
     # Get email subject and content
-    template = 'wagtailadmin/notifications/' + notification + '.html'
-    rendered_template = render_to_string(template, dict(revision=revision, settings=settings)).split('\n')
+    text_template = 'wagtailadmin/notifications/text/' + notification + '.html'
+    html_template = 'wagtailadmin/notifications/html/' + notification + '.html'
+
+    rendered_text_template = render_to_string(text_template, dict(revision=revision, settings=settings)).split('\n')
+    rendered_html_template = render_to_string(html_template, dict(revision=revision, settings=settings)).split('\n')
+    
     email_subject = rendered_template[0]
     email_content = '\n'.join(rendered_template[1:])
 
@@ -85,7 +99,7 @@ def send_notification(page_revision_id, notification, excluded_user_id):
         from_email = 'webmaster@localhost'
 
     # Send email
-    send_mail(email_subject, email_content, from_email, email_addresses)
+    send_mail(email_subject, email_content, from_email, email_addresses, html_message=None)
 
 
 @task
