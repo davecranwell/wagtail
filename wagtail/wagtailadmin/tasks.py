@@ -7,6 +7,8 @@ from django.db.models import Q
 from wagtail.wagtailcore.models import PageRevision, GroupPagePermission
 from wagtail.wagtailusers.models import UserProfile
 
+from wagtail.wagtailadmin.emails import Email
+
 # The following will check to see if we can import task from celery - 
 # if not then we definitely haven't installed it
 try:
@@ -29,15 +31,6 @@ if NO_CELERY or not hasattr(settings, 'BROKER_URL'):
         f.delay=f
         return f
 
-class Email(object):
-    def __init__(self, register_hook_name, construct_hook_name=None):
-        self.register_hook_name = register_hook_name
-        self.construct_hook_name = construct_hook_name
-        # _registered_menu_items will be populated on first access to the
-        # registered_menu_items property. We can't populate it in __init__ because
-        # we can't rely on all hooks modules to have been imported at the point that
-        # we create the admin_menu and settings_menu instances
-        self._registered_menu_items = None
 
 def users_with_page_permission(page, permission_type, include_superusers=True):
     # Get user model
@@ -80,30 +73,27 @@ def send_notification(page_revision_id, notification, excluded_user_id):
     if not email_addresses:
         return
 
+    subject = ""
+
+    if notification == "submitted":
+        subject = _('The page "{0}" has been submitted for moderation').format(revision.page)
+    elif notification == "approved":
+        subject = _('The page "{0}" has been approved').format(revision.page)
+    elif notification == "rejected":
+        subject = _('The page "{0}" has been rejected').format(revision.page)
+
     # Get email subject and content
     text_template = 'wagtailadmin/notifications/text/' + notification + '.html'
     html_template = 'wagtailadmin/notifications/html/' + notification + '.html'
-
-    rendered_text_template = render_to_string(text_template, dict(revision=revision, settings=settings)).split('\n')
-    rendered_html_template = render_to_string(html_template, dict(revision=revision, settings=settings)).split('\n')
     
-    email_subject = rendered_template[0]
-    email_content = '\n'.join(rendered_template[1:])
-
-    # Get from email
-    if hasattr(settings, 'WAGTAILADMIN_NOTIFICATION_FROM_EMAIL'):
-        from_email = settings.WAGTAILADMIN_NOTIFICATION_FROM_EMAIL
-    elif hasattr(settings, 'DEFAULT_FROM_EMAIL'):
-        from_email = settings.DEFAULT_FROM_EMAIL
-    else:
-        from_email = 'webmaster@localhost'
-
-    # Send email
-    send_mail(email_subject, email_content, from_email, email_addresses, html_message=None)
-
+    rendered_text_content = render_to_string(text_template, dict(revision=revision, settings=settings))
+    rendered_html_content = render_to_string(html_template, dict(revision=revision, settings=settings))
+    
+    mail = Email(subject, to_address, rendered_text_content, html_content=rendered_html_content, from_address=None)
+    mail.send();
 
 @task
-def send_email_task(email_subject, email_content, email_addresses, from_email=None):
+def send_email_task(email_subject, email_content, email_addresses):
     if not from_email:
         if hasattr(settings, 'WAGTAILADMIN_NOTIFICATION_FROM_EMAIL'):
             from_email = settings.WAGTAILADMIN_NOTIFICATION_FROM_EMAIL
