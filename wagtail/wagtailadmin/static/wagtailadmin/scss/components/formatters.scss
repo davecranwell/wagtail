@@ -73,23 +73,8 @@
 /* Displays "timesince" formatted date with full date on hover */
 .human-readable-date{
     overflow:hidden;
-    display:block;
+    display:inline;
     position:relative;
-
-   /* &:before{
-        position:absolute;
-        display:none;
-        content:attr(title);
-    }
-*/
-   /* &:hover{
-        visibility:hidden;
-
-        &:before{
-            visibility:visible;
-            display:block;
-        }
-    }*/
 }
 
 /* makes a link look like regular text */
