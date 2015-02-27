@@ -88,7 +88,10 @@ First, ``models.py``:
 
     from django.shortcuts import render
     from wagtail.wagtailcore.url_routing import RouteResult
-
+    from django.http.response import Http404
+    from wagtail.wagtailadmin.edit_handlers import FieldPanel, MultiFieldPanel
+    from wagtail.wagtailcore.models import Page
+    
     ...
 
     class Echoer(Page):
@@ -105,7 +108,7 @@ First, ``models.py``:
                     raise Http404
 
         def serve(self, path_components=[]):
-            render(request, self.template, {
+            return render(request, self.template, {
                 'self': self,
                 'echo': ' '.join(path_components),
             })
@@ -115,7 +118,7 @@ First, ``models.py``:
     ]
 
     Echoer.promote_panels = [
-        MultiFieldPanel(COMMON_PANELS, "Common page configuration"),
+        MultiFieldPanel(Page.promote_panels, "Common page configuration"),
     ]
 
 This model, ``Echoer``, doesn't define any properties, but does subclass ``Page`` so objects will be able to have a custom title and slug. The template just has to display our ``{{ echo }}`` property.
@@ -179,10 +182,10 @@ Now that we have the many-to-many tag relationship in place, we can fit in a way
             if tag:
                 blogs = blogs.filter(tags__name=tag)
 
-        return render(request, self.template, {
-            'self': self,
-            'blogs': blogs,
-        })
+            return render(request, self.template, {
+                'self': self,
+                'blogs': blogs,
+            })
 
 Here, ``blogs.filter(tags__name=tag)`` invokes a reverse Django queryset filter on the ``BlogPageTag`` model to optionally limit the ``BlogPage`` objects sent to the template for rendering. Now, lets render both sides of the relation by showing the tags associated with an object and a way of showing all of the objects associated with each tag. This could be added to the ``blog_page.html`` template:
 
@@ -195,24 +198,3 @@ Here, ``blogs.filter(tags__name=tag)`` invokes a reverse Django queryset filter 
 Iterating through ``self.tags.all`` will display each tag associated with ``self``, while the link(s) back to the index make use of the filter option added to the ``BlogIndexPage`` model. A Django query could also use the ``tagged_items`` related name field to get ``BlogPage`` objects associated with a tag.
 
 This is just one possible way of creating a taxonomy for Wagtail objects. With all of the components for a taxonomy available through Wagtail, you should be able to fulfill even the most exotic taxonomic schemes.
-
-
-Custom Page Contexts by Overriding get_context()
-------------------------------------------------
-
-
-
-Load Alternate Templates by Overriding get_template()
------------------------------------------------------
-
-
-
-Preview Modes
--------------
-
-preview_modes
-serve_preview
-
-
-
-

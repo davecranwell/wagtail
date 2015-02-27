@@ -1,7 +1,10 @@
+from __future__ import unicode_literals
+
+import logging
 import warnings
+import json
 
 import six
-from six import string_types
 from six import StringIO
 from six.moves.urllib.parse import urlparse
 
@@ -9,7 +12,7 @@ from modelcluster.models import ClusterableModel, get_all_child_relations
 
 from django.db import models, connection, transaction
 from django.db.models import Q
-from django.db.models.signals import pre_delete
+from django.db.models.signals import post_save, pre_delete, post_delete
 from django.dispatch.dispatcher import receiver
 from django.http import Http404
 from django.core.cache import cache
@@ -22,9 +25,10 @@ from django.conf import settings
 from django.template.response import TemplateResponse
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
-from django.core.exceptions import ValidationError, ImproperlyConfigured
+from django.core.exceptions import ValidationError, ImproperlyConfigured, ObjectDoesNotExist
 from django.utils.functional import cached_property
 from django.utils.encoding import python_2_unicode_compatible
+from django.core import checks
 
 from treebeard.mp_tree import MP_Node
 
@@ -35,6 +39,9 @@ from wagtail.wagtailcore.signals import page_published, page_unpublished
 
 from wagtail.wagtailsearch import index
 from wagtail.wagtailsearch.backends import get_search_backend
+
+
+logger = logging.getLogger('wagtail.core')
 
 
 class SiteManager(models.Manager):
@@ -113,12 +120,6 @@ class Site(models.Model):
                     ]}
                 )
 
-    # clear the wagtail_site_root_paths cache whenever Site records are updated
-    def save(self, *args, **kwargs):
-        result = super(Site, self).save(*args, **kwargs)
-        cache.delete('wagtail_site_root_paths')
-        return result
-
     @staticmethod
     def get_site_root_paths():
         """
@@ -135,6 +136,17 @@ class Site(models.Model):
             cache.set('wagtail_site_root_paths', result, 3600)
 
         return result
+
+
+# Clear the wagtail_site_root_paths from the cache whenever Site records are updated
+@receiver(post_save, sender=Site)
+def clear_site_root_paths_on_save(sender, instance, **kwargs):
+    cache.delete('wagtail_site_root_paths')
+
+
+@receiver(post_delete, sender=Site)
+def clear_site_root_paths_on_delete(sender, instance, **kwargs):
+    cache.delete('wagtail_site_root_paths')
 
 
 PAGE_MODEL_CLASSES = []
@@ -260,7 +272,7 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
     live = models.BooleanField(default=True, editable=False)
     has_unpublished_changes = models.BooleanField(default=False, editable=False)
     url_path = models.CharField(max_length=255, blank=True, editable=False)
-    owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, editable=False, related_name='owned_pages')
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, editable=False, on_delete=models.SET_NULL, related_name='owned_pages')
 
     seo_title = models.CharField(verbose_name=_("Page title"), max_length=255, blank=True, help_text=_("Optional. 'Search Engine Friendly' title. This will appear at the top of the browser window."))
     show_in_menus = models.BooleanField(default=False, help_text=_("Whether a link to this page will appear in automatically generated menus"))
@@ -316,21 +328,25 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
     @transaction.atomic  # ensure that changes are only committed when we have updated all descendant URL paths, to preserve consistency
     def save(self, *args, **kwargs):
         update_descendant_url_paths = False
+        is_new = self.id is None
 
-        if self.id is None:
+        if is_new:
             # we are creating a record. If we're doing things properly, this should happen
             # through a treebeard method like add_child, in which case the 'path' field
             # has been set and so we can safely call get_parent
             self.set_url_path(self.get_parent())
         else:
-            # see if the slug has changed from the record in the db, in which case we need to
-            # update url_path of self and all descendants
-            old_record = Page.objects.get(id=self.id)
-            if old_record.slug != self.slug:
-                self.set_url_path(self.get_parent())
-                update_descendant_url_paths = True
-                old_url_path = old_record.url_path
-                new_url_path = self.url_path
+            # Check that we are committing the slug to the database
+            # Basically: If update_fields has been specified, and slug is not included, skip this step
+            if not ('update_fields' in kwargs and 'slug' not in kwargs['update_fields']):
+                # see if the slug has changed from the record in the db, in which case we need to
+                # update url_path of self and all descendants
+                old_record = Page.objects.get(id=self.id)
+                if old_record.slug != self.slug:
+                    self.set_url_path(self.get_parent())
+                    update_descendant_url_paths = True
+                    old_url_path = old_record.url_path
+                    new_url_path = self.url_path
 
         result = super(Page, self).save(*args, **kwargs)
 
@@ -341,7 +357,42 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
         if Site.objects.filter(root_page=self).exists():
             cache.delete('wagtail_site_root_paths')
 
+        # Log
+        if is_new:
+            cls = type(self)
+            logger.info("Page created: \"%s\" id=%d content_type=%s.%s path=%s", self.title, self.id, cls._meta.app_label, cls.__name__, self.url_path)
+
         return result
+
+    @classmethod
+    def check(cls, **kwargs):
+        errors = super(Page, cls).check(**kwargs)
+
+        # Check that foreign keys from pages are not configured to cascade
+        # This is the default Django behaviour which must be explicitly overridden
+        # to prevent pages disappearing unexpectedly and the tree being corrupted
+
+        # get names of foreign keys pointing to parent classes (such as page_ptr)
+        field_exceptions = [field.name
+                            for model in [cls] + list(cls._meta.get_parent_list())
+                            for field in model._meta.parents.values()]
+
+        field_exceptions += ['content_type']
+
+
+        for field in cls._meta.fields:
+            if isinstance(field, models.ForeignKey) and field.name not in field_exceptions:
+                if field.rel.on_delete == models.CASCADE:
+                    errors.append(
+                        checks.Warning(
+                            "Field hasn't specified on_delete action",
+                            hint="Set on_delete=models.SET_NULL and make sure the field is nullable.",
+                            obj=field,
+                            id='wagtailcore.W001',
+                        )
+                    )
+
+        return errors
 
     def _update_descendant_url_paths(self, old_url_path, new_url_path):
         cursor = connection.cursor()
@@ -412,6 +463,7 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
                 raise Http404
 
     def save_revision(self, user=None, submitted_for_moderation=False, approved_go_live_at=None):
+        # Create revision
         revision = self.revisions.create(
             content_json=self.to_json(),
             user=user,
@@ -421,6 +473,12 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
 
         self.latest_revision_created_at = revision.created_at
         self.save(update_fields=['latest_revision_created_at'])
+
+        # Log
+        logger.info("Page edited: \"%s\" id=%d revision_id=%d", self.title, self.id, revision.id)
+
+        if submitted_for_moderation:
+            logger.info("Page submitted for moderation: \"%s\" id=%d revision_id=%d", self.title, self.id, revision.id)
 
         return revision
 
@@ -447,6 +505,8 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
                 self.save()
 
             page_unpublished.send(sender=self.specific_class, instance=self.specific)
+
+            logger.info("Page unpublished: \"%s\" id=%d", self.title, self.id)
 
             self.revisions.update(approved_go_live_at=None)
 
@@ -508,6 +568,21 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
         for (id, root_path, root_url) in Site.get_site_root_paths():
             if self.url_path.startswith(root_path):
                 return ('' if current_site.id == id else root_url) + reverse('wagtail_serve', args=(self.url_path[len(root_path):],))
+
+    @classmethod
+    def get_indexed_objects(cls):
+        content_type = ContentType.objects.get_for_model(cls)
+        return super(Page, cls).get_indexed_objects().filter(content_type=content_type)
+
+    def get_indexed_instance(self):
+        # This is accessed on save by the wagtailsearch signal handler, and in edge
+        # cases (e.g. loading test fixtures), may be called before the specific instance's
+        # entry has been created. In those cases, we aren't ready to be indexed yet, so
+        # return None.
+        try:
+            return self.specific
+        except ObjectDoesNotExist:
+            return None
 
     @classmethod
     def search(cls, query_string, show_unpublished=False, search_title_only=False, extra_filters={}, prefetch_related=[], path=None):
@@ -650,7 +725,10 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
         new_self.save()
         new_self._update_descendant_url_paths(old_url_path, new_url_path)
 
-    def copy(self, recursive=False, to=None, update_attrs=None, copy_revisions=True):
+        # Log
+        logger.info("Page moved: \"%s\" id=%d path=%s", self.title, self.id, new_url_path)
+
+    def copy(self, recursive=False, to=None, update_attrs=None, copy_revisions=True, keep_live=True, user=None):
         # Make a copy
         page_copy = Page.objects.get(id=self.id).specific
         page_copy.pk = None
@@ -658,6 +736,13 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
         page_copy.depth = None
         page_copy.numchild = 0
         page_copy.path = None
+
+        if not keep_live:
+            page_copy.live = False
+            page_copy.has_unpublished_changes = True
+
+        if user:
+            page_copy.owner = user
 
         if update_attrs:
             for field, value in update_attrs.items():
@@ -687,12 +772,47 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
                 revision.submitted_for_moderation = False
                 revision.approved_go_live_at = None
                 revision.page = page_copy
+
+                # Update ID fields in content
+                revision_content = json.loads(revision.content_json)
+                revision_content['pk'] = page_copy.pk
+
+                for child_relation in get_all_child_relations(specific_self):
+                    try:
+                        child_objects = revision_content[child_relation.get_accessor_name()]
+                    except KeyError:
+                        # KeyErrors are possible if the revision was created
+                        # before this child relation was added to the database
+                        continue
+
+                    for child_object in child_objects:
+                        child_object[child_relation.field.name] = page_copy.pk
+
+                revision.content_json = json.dumps(revision_content)
+
+                # Save
                 revision.save()
+
+        # Create a new revision
+        # This code serves a few purposes:
+        # * It makes sure update_attrs gets applied to the latest revision so the changes are reflected in the editor
+        # * It bumps the last_revision_created_at value so the new page gets ordered as if it was just created
+        # * It sets the user of the new revision so it's possible to see who copied the page by looking at its history
+        latest_revision = page_copy.get_latest_revision_as_page()
+
+        if update_attrs:
+            for field, value in update_attrs.items():
+                setattr(latest_revision, field, value)
+
+        latest_revision.save_revision(user=user)
+
+        # Log
+        logger.info("Page copied: \"%s\" id=%d from=%d", page_copy.title, page_copy.id, self.id)
 
         # Copy child pages
         if recursive:
             for child_page in self.get_children():
-                child_page.specific.copy(recursive=True, to=page_copy)
+                child_page.specific.copy(recursive=True, to=page_copy, copy_revisions=copy_revisions, keep_live=keep_live, user=user)
 
         return page_copy
 
@@ -737,10 +857,10 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
         # Apply middleware to the request - see http://www.mellowmorning.com/2011/04/18/mock-django-request-for-testing/
         handler = BaseHandler()
         handler.load_middleware()
+        # call each middleware in turn and throw away any responses that they might return
         for middleware_method in handler._request_middleware:
-            if middleware_method(request):
-                raise Exception("Couldn't create request mock object - "
-                                "request middleware returned a response")
+            middleware_method(request)
+
         return request
 
     DEFAULT_PREVIEW_MODES = [('', 'Default')]
@@ -794,12 +914,10 @@ class Page(six.with_metaclass(PageBase, MP_Node, ClusterableModel, index.Indexed
         return ['/']
 
     def get_sitemap_urls(self):
-        latest_revision = self.get_latest_revision()
-
         return [
             {
                 'location': self.full_url,
-                'lastmod': latest_revision.created_at if latest_revision else None
+                'lastmod': self.latest_revision_created_at
             }
         ]
 
@@ -899,6 +1017,11 @@ def unpublish_page_before_delete(sender, instance, **kwargs):
         instance.unpublish(commit=False)
 
 
+@receiver(post_delete, sender=Page)
+def log_page_deletion(sender, instance, **kwargs):
+    logger.info("Page deleted: \"%s\" id=%d", instance.title, instance.id)
+
+
 class Orderable(models.Model):
     sort_order = models.IntegerField(null=True, blank=True, editable=False)
     sort_order_field = 'sort_order'
@@ -917,7 +1040,7 @@ class SubmittedRevisionsManager(models.Manager):
 class PageRevision(models.Model):
     page = models.ForeignKey('Page', related_name='revisions')
     submitted_for_moderation = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True)
     content_json = models.TextField()
     approved_go_live_at = models.DateTimeField(null=True, blank=True)
@@ -926,6 +1049,12 @@ class PageRevision(models.Model):
     submitted_revisions = SubmittedRevisionsManager()
 
     def save(self, *args, **kwargs):
+        # Set default value for created_at to now
+        # We cannot use auto_now_add as that will override
+        # any value that is set before saving
+        if self.created_at is None:
+            self.created_at = timezone.now()
+
         super(PageRevision, self).save(*args, **kwargs)
         if self.submitted_for_moderation:
             # ensure that all other revisions of this page have the 'submitted for moderation' flag unset
@@ -950,15 +1079,18 @@ class PageRevision(models.Model):
         obj.has_unpublished_changes = self.page.has_unpublished_changes
         obj.owner = self.page.owner
         obj.locked = self.page.locked
+        obj.latest_revision_created_at = self.page.latest_revision_created_at
 
         return obj
 
     def approve_moderation(self):
         if self.submitted_for_moderation:
+            logger.info("Page moderation approved: \"%s\" id=%d revision_id=%d", self.page.title, self.page.id, self.id)
             self.publish()
 
     def reject_moderation(self):
         if self.submitted_for_moderation:
+            logger.info("Page moderation rejected: \"%s\" id=%d revision_id=%d", self.page.title, self.page.id, self.id)
             self.submitted_for_moderation = False
             self.save(update_fields=['submitted_for_moderation'])
 
@@ -987,7 +1119,7 @@ class PageRevision(models.Model):
             page.has_unpublished_changes = not self.is_latest_revision()
             # If page goes live clear the approved_go_live_at of all revisions
             page.revisions.update(approved_go_live_at=None)
-        page.expired = False # When a page is published it can't be expired
+        page.expired = False  # When a page is published it can't be expired
         page.save()
         self.submitted_for_moderation = False
         page.revisions.update(submitted_for_moderation=False)
@@ -995,8 +1127,12 @@ class PageRevision(models.Model):
         if page.live:
             page_published.send(sender=page.specific_class, instance=page.specific)
 
+            logger.info("Page published: \"%s\" id=%d revision_id=%d", page.title, page.id, self.id)
+        elif page.go_live_at:
+            logger.info("Page scheduled for publish: \"%s\" id=%d revision_id=%d go_live_at=%s", page.title, page.id, self.id, page.go_live_at.isoformat())
+
     def __str__(self):
-        return '"' + unicode(self.page) + '" at ' + unicode(self.created_at)
+        return '"' + six.text_type(self.page) + '" at ' + six.text_type(self.created_at)
 
 
 PAGE_PERMISSION_TYPE_CHOICES = [

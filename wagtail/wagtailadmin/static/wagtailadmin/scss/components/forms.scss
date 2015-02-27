@@ -189,7 +189,6 @@ input[type=submit], input[type=reset], input[type=button], .button, button{
     @include border-radius(3px);
     width:auto;
     height:2.4em;
-    line-height:2.4em;
     padding:0 1em;
     font-size:0.9em;
     font-weight:normal;
@@ -212,18 +211,24 @@ input[type=submit], input[type=reset], input[type=button], .button, button{
     &.button-small{
         padding:0 0.8em;
         height:2em;
-        line-height:2em;
         font-size:0.85em;
     }
 
     &.button-secondary{
         color:$color-button;
-        background-color:white;
+        background-color:transparent;
     }
 
-    &.icon.text-replace:before{
-        font-size:auto;
-    }
+    /* Buttons which are only an icon */
+    &.icon.text-replace{
+        font-size:0; /* unavoidable duplication of setting in icons.scss */
+        width:1.8rem;
+        height:1.8rem;
+
+        &:before{
+            line-height:1.7em;
+        }
+    }   
     
     &:hover{
         background-color: $color-button-hover;
@@ -260,7 +265,7 @@ input[type=submit], input[type=reset], input[type=button], .button, button{
             border-color:transparent;
             background-color: $color-button-no-hover;
         }
-    }  
+    }
 
     &.bicolor{
         border:0;
@@ -303,7 +308,7 @@ input[type=submit], input[type=reset], input[type=button], .button, button{
         @include border-radius(0px);
         width:auto;
         height:auto;
-        line-height:auto;
+        /*line-height:auto;*/
         padding:0;
         font-size:inherit;
         font-weight:normal;
@@ -323,22 +328,92 @@ input[type=submit], input[type=reset], input[type=button], .button, button{
         -moz-appearance: none;
         -moz-box-sizing:border-box;
     }
-    &:disabled, &[disabled]{
-        background-color:$color-grey-2;
-        border-color:$color-grey-2;
-        color:lighten($color-grey-2, 15%);
+    &:disabled, &[disabled], &.disabled{
+        background-color:$color-grey-3 !important;
+        border-color:$color-grey-3 !important;
+        color:lighten($color-grey-2, 15%) !important;
+        cursor:not-allowed;
+    }
+    &.button-secondary:disabled, &.button-secondary[disabled], &.button-secondary.disabled{
+        background-color: white !important;
+        border-color:$color-grey-3 !important;
+        color:$color-grey-3 !important;
+    }
+
+    &.button-nostroke{
+        border:0 !important;
+    }
+
+    @media screen and (min-width: $breakpoint-mobile){
+        font-size:0.95em;
+        padding:0 1.4em;
+        height: 3em; 
+        
+        /*line-height:3em;*/
+
+        &.icon.text-replace{
+            width:2.2rem;
+            height:2.2rem;
+
+            &:before{
+                line-height:2.1em;
+            }
+        }   
+
+        &.button-small{
+            &.icon.text-replace{
+                height:1.8rem;
+                width:1.8rem;
+
+                &:before{
+                    line-height:1.7em;
+                }
+            }
+        }
+
+        &.bicolor{
+            padding-left:3.7em;
+
+            &:before{
+                width:2em;
+                line-height:2.2em;
+                font-size:1.1rem;
+            }
+        }
+
+        &.button-small.bicolor{
+            line-height:2.2em;
+            padding-left:3.2em;
+
+            &:before{
+                width:1.8em;
+                line-height:1.65em;
+            }
+        }
+    }
+}
+
+a.button{
+    line-height:2.4em;
+    height:auto;
+
+    &.button-small{
+        line-height:1.85em;
+    }
+
+    @media screen and (min-width: $breakpoint-mobile){
+        line-height:2.9em;
     }
 }
 
 /* Special styles to counteract Firefox's completely unwarranted assumptions about button styles */
 input[type=submit], input[type=reset], input[type=button], button{
     padding:0 1em;
-    height: 2.4em; 
-    line-height:inherit;
 
-    &.button-small{
-        height:2em;
-        line-height:inherit;
+    @media screen and (min-width: $breakpoint-mobile){
+        &.button-small{
+            height:2em;
+        }
     }
 }
 
@@ -382,9 +457,7 @@ input[type=submit], input[type=reset], input[type=button], button{
         @include border-radius(2px);
         
         li{
-            background-color: $color-teal;
             float:left;
-            cursor:pointer;
             margin-right:1px;
 
             &:last-child{
@@ -392,24 +465,6 @@ input[type=submit], input[type=reset], input[type=button], button{
             }
         }
 
-        .icon{
-            padding:0.3em;
-        }
-
-        .icon:before{
-            line-height:2em;
-            width:2em;
-        }
-        .icon:hover{
-            background-color:$color-teal-darker;
-
-            &:before{
-                color:white;
-            }
-        }
-        .icon-bin:hover{
-            background-color:$color-red;
-        }
         .disabled{
             display:none;
         }
@@ -655,6 +710,16 @@ ul.inline li:first-child, li.inline:first-child{
         display: none;
     }
 
+    .actions{
+        overflow:hidden;
+        @include clearfix;
+        
+        li{
+            float:left;
+            margin:0.3em;
+        }
+    }
+
     /* ...unless the .page-chooser has the 'blank' class set */
     &.blank {
         .chosen { display: none; }
@@ -736,6 +801,9 @@ ul.tagit input[type="text"]{
 ul.tagit li.tagit-choice-editable{
     padding:0 23px 0 0 !important; /* having to use important, FML*/
 }
+.ui-front{ /* provided by jqueryui but not high enough an index */
+    z-index:1000;
+}
 
 .tagit-close{
     .ui-icon-close{
@@ -803,8 +871,7 @@ input[type=submit], input[type=reset], input[type=button], .button, button{
         .boolean_field &,
         .choice_field &,
         .model_choice_field &,
-        .image_field &,
-        .file_field &{
+        .image_field &{
             padding-top:0;
         }
     }
@@ -817,51 +884,6 @@ input[type=submit], input[type=reset], input[type=button], .button, button{
             width:auto;
         }
     }
-
-    input[type=submit], input[type=reset], input[type=button], .button, button{
-        font-size:0.95em;
-        padding:0 1.4em;
-        height: 3em; 
-        line-height:3em;
-
-        &.button-small{
-            height:2.3em;
-            line-height:2.2em;
-        }
-
-        &.bicolor{
-            padding-left:3.7em;
-
-            &:before{
-                width:2em;
-                line-height:2.2em;
-                font-size:1.1rem;
-            }
-        }
-
-        &.button-small.bicolor{
-            line-height:2.3em;
-
-            &:before{
-                line-height:1.85em;
-            }
-        }
-    }
-
-    /* Special styles to counteract Firefox's completely unwarranted assumptions about button styles */
-    input[type=submit], input[type=reset], input[type=button], button{
-        line-height:inherit;
-
-        &.button-small, &.bicolor,
-        &.button-small.bicolor{
-           line-height:inherit; 
-        }
-
-        &.button-small{
-            height:2.3em;
-        }
-    }
-
 
     .help{
         opacity:1;

@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 from django.db import models
 from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
@@ -28,4 +30,4 @@ class UserProfile(models.Model):
         return cls.objects.get_or_create(user=user)[0]
 
     def __str__(self):
-        return self.user.username
+        return self.user.get_username()

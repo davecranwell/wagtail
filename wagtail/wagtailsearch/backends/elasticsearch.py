@@ -3,22 +3,14 @@ from __future__ import absolute_import
 import json
 
 from six.moves.urllib.parse import urlparse
-from six import text_type
 
 from django.db import models
-from django.db.models.sql.where import SubqueryConstraint, WhereNode
-
-# Django 1.7 lookups
-try:
-    from django.db.models.lookups import Lookup
-except ImportError:
-    Lookup = None
 
 from elasticsearch import Elasticsearch, NotFoundError, RequestError
 from elasticsearch.helpers import bulk
 
-from wagtail.wagtailsearch.backends.base import BaseSearch
-from wagtail.wagtailsearch.index import Indexed, SearchField, FilterField
+from wagtail.wagtailsearch.backends.base import BaseSearch, BaseSearchQuery, BaseSearchResults
+from wagtail.wagtailsearch.index import Indexed, SearchField, FilterField, class_is_indexed
 
 
 class ElasticSearchMapping(object):
@@ -62,7 +54,7 @@ class ElasticSearchMapping(object):
                 mapping['boost'] = field.boost
 
             if field.partial_match:
-                mapping['analyzer'] = 'edgengram_analyzer'
+                mapping['index_analyzer'] = 'edgengram_analyzer'
 
             mapping['include_in_all'] = True
         elif isinstance(field, FilterField):
@@ -80,7 +72,7 @@ class ElasticSearchMapping(object):
         fields = {
             'pk': dict(type='string', index='not_analyzed', store='yes', include_in_all=False),
             'content_type': dict(type='string', index='not_analyzed', include_in_all=False),
-            '_partials': dict(type='string', analyzer='edgengram_analyzer', include_in_all=False),
+            '_partials': dict(type='string', index_analyzer='edgengram_analyzer', include_in_all=False),
         }
 
         fields.update(dict(
@@ -118,31 +110,8 @@ class ElasticSearchMapping(object):
         return '<ElasticSearchMapping: %s>' % (self.model.__name__, )
 
 
-class FilterError(Exception):
-    pass
-
-
-class FieldError(Exception):
-    pass
-
-
-class ElasticSearchQuery(object):
-    def __init__(self, queryset, query_string, fields=None):
-        self.queryset = queryset
-        self.query_string = query_string
-        self.fields = fields
-
-    def _process_lookup(self, field_attname, lookup, value):
-        # Get field
-        field = dict(
-            (field.get_attname(self.queryset.model), field)
-            for field in self.queryset.model.get_filterable_search_fields()
-        ).get(field_attname, None)
-
-        # Give error if the field doesn't exist
-        if field is None:
-            raise FieldError('Cannot filter ElasticSearch results with field "' + field_attname + '". Please add FilterField(\'' + field_attname + '\') to ' + self.queryset.model.__name__ + '.search_fields.')
-
+class ElasticSearchQuery(BaseSearchQuery):
+    def _process_lookup(self, field, lookup, value):
         # Get the name of the field in the index
         field_index_name = field.get_index_name(self.queryset.model)
 
@@ -211,72 +180,23 @@ class ElasticSearchQuery(object):
                 }
             }
 
-        raise FilterError('Could not apply filter on ElasticSearch results: "' + field_attname + '__' + lookup + ' = ' + text_type(value) + '". Lookup "' + lookup + '"" not recognised.')
+    def _connect_filters(self, filters, connector, negated):
+        if filters:
+            if len(filters) == 1:
+                filter_out = filters[0]
+            else:
+                filter_out = {
+                    connector.lower(): [
+                        fil for fil in filters if fil is not None
+                    ]
+                }
 
-    def _get_filters_from_where(self, where_node):
-        # Check if this is a leaf node
-        if isinstance(where_node, tuple): # Django 1.6 and below
-            field_attname = where_node[0].col
-            lookup = where_node[1]
-            value = where_node[3]
+            if negated:
+                filter_out = {
+                    'not': filter_out
+                }
 
-            # Process the filter
-            return self._process_lookup(field_attname, lookup, value)
-
-        elif Lookup is not None and isinstance(where_node, Lookup): # Django 1.7 and above
-            field_attname = where_node.lhs.target.attname
-            lookup = where_node.lookup_name
-            value = where_node.rhs
-
-            # Process the filter
-            return self._process_lookup(field_attname, lookup, value)
-
-        elif isinstance(where_node, SubqueryConstraint):
-            raise FilterError('Could not apply filter on ElasticSearch results: Subqueries are not allowed.')
-
-        elif isinstance(where_node, WhereNode):
-            # Get child filters
-            connector = where_node.connector
-            child_filters = [self._get_filters_from_where(child) for child in where_node.children]
-            child_filters = [child_filter for child_filter in child_filters if child_filter]
-
-            # Connect them
-            if child_filters:
-                if len(child_filters) == 1:
-                    filter_out = child_filters[0]
-                else:
-                    filter_out = {
-                        connector.lower(): [
-                            fil for fil in child_filters if fil is not None
-                        ]
-                    }
-
-                if where_node.negated:
-                    filter_out = {
-                        'not': filter_out
-                    }
-
-                return filter_out
-        else:
-            raise FilterError('Could not apply filter on ElasticSearch results: Unknown where node: ' + str(type(where_node)))
-
-    def _get_filters(self):
-        # Filters
-        filters = []
-
-        # Filter by content type
-        filters.append({
-            'prefix': {
-                'content_type': self.queryset.model.indexed_get_content_type()
-            }
-        })
-
-        # Apply filters from queryset
-        queryset_filters = self._get_filters_from_where(self.queryset.query.where)
-        if queryset_filters:
-            filters.append(queryset_filters)
-
-        return filters
+            return filter_out
 
     def to_es(self):
         # Query
@@ -302,7 +222,20 @@ class ElasticSearchQuery(object):
             }
 
         # Filters
-        filters = self._get_filters()
+        filters = []
+
+        # Filter by content type
+        filters.append({
+            'prefix': {
+                'content_type': self.queryset.model.indexed_get_content_type()
+            }
+        })
+
+        # Apply filters from queryset
+        queryset_filters = self._get_filters_from_queryset()
+        if queryset_filters:
+            filters.append(queryset_filters)
+
         if len(filters) == 1:
             query = {
                 'filtered': {
@@ -326,36 +259,7 @@ class ElasticSearchQuery(object):
         return json.dumps(self.to_es())
 
 
-class ElasticSearchResults(object):
-    def __init__(self, backend, query, prefetch_related=None):
-        self.backend = backend
-        self.query = query
-        self.prefetch_related = prefetch_related
-        self.start = 0
-        self.stop = None
-        self._results_cache = None
-        self._count_cache = None
-
-    def _set_limits(self, start=None, stop=None):
-        if stop is not None:
-            if self.stop is not None:
-                self.stop = min(self.stop, self.start + stop)
-            else:
-                self.stop = self.start + stop
-
-        if start is not None:
-            if self.stop is not None:
-                self.start = min(self.stop, self.start + start)
-            else:
-                self.start = self.start + start
-
-    def _clone(self):
-        klass = self.__class__
-        new = klass(self.backend, self.query, prefetch_related=self.prefetch_related)
-        new.start = self.start
-        new.stop = self.stop
-        return new
-
+class ElasticSearchResults(BaseSearchResults):
     def _do_search(self):
         # Params for elasticsearch query
         params = dict(
@@ -374,10 +278,7 @@ class ElasticSearchResults(object):
         hits = self.backend.es.search(**params)
 
         # Get pks from results
-        pks = [hit['fields']['pk'] for hit in hits['hits']['hits']]
-
-        # ElasticSearch 1.x likes to pack pks into lists, unpack them if this has happened
-        pks = [pk[0] if isinstance(pk, list) else pk for pk in pks]
+        pks = [hit['fields']['pk'][0] for hit in hits['hits']['hits']]
 
         # Initialise results dictionary
         results = dict((str(pk), None) for pk in pks)
@@ -394,21 +295,11 @@ class ElasticSearchResults(object):
         # Get query
         query = self.query.to_es()
 
-        # Elasticsearch 1.x
-        count = self.backend.es.count(
+        # Get count
+        hit_count = self.backend.es.count(
             index=self.backend.es_index,
             body=dict(query=query),
-        )
-
-        # ElasticSearch 0.90.x fallback
-        if not count['_shards']['successful'] and "No query registered for [query]]" in count['_shards']['failures'][0]['reason']:
-            count = self.backend.es.count(
-                index=self.backend.es_index,
-                body=query,
-            )
-
-        # Get count
-        hit_count = count['count']
+        )['count']
 
         # Add limits
         hit_count -= self.start
@@ -416,53 +307,6 @@ class ElasticSearchResults(object):
             hit_count = min(hit_count, self.stop - self.start)
 
         return max(hit_count, 0)
-
-    def results(self):
-        if self._results_cache is None:
-            self._results_cache = self._do_search()
-        return self._results_cache
-
-    def count(self):
-        if self._count_cache is None:
-            if self._results_cache is not None:
-                self._count_cache = len(self._results_cache)
-            else:
-                self._count_cache = self._do_count()
-        return self._count_cache
-
-    def __getitem__(self, key):
-        new = self._clone()
-
-        if isinstance(key, slice):
-            # Set limits
-            start = int(key.start) if key.start else None
-            stop = int(key.stop) if key.stop else None
-            new._set_limits(start, stop)
-
-            # Copy results cache
-            if self._results_cache is not None:
-                new._results_cache = self._results_cache[key]
-
-            return new
-        else:
-            if self._results_cache is not None:
-                return self._results_cache[key]
-
-            new.start = key
-            new.stop = key + 1
-            return list(new)[0]
-
-    def __iter__(self):
-        return iter(self.results())
-
-    def __len__(self):
-        return len(self.results())
-
-    def __repr__(self):
-        data = list(self[:21])
-        if len(data) > 20:
-            data[-1] = "...(remaining elements truncated)..."
-        return repr(data)
 
 
 class ElasticSearch(BaseSearch):
@@ -482,11 +326,19 @@ class ElasticSearch(BaseSearch):
             for url in self.es_urls:
                 parsed_url = urlparse(url)
 
+                use_ssl = parsed_url.scheme == 'https'
+                port = parsed_url.port or (443 if use_ssl else 80)
+
+                http_auth = None
+                if parsed_url.username is not None and parsed_url.password is not None:
+                    http_auth = (parsed_url.username, parsed_url.password)
+
                 self.es_hosts.append({
                     'host': parsed_url.hostname,
-                    'port': parsed_url.port or 9200,
+                    'port': port,
                     'url_prefix': parsed_url.path,
-                    'use_ssl': parsed_url.scheme == 'https',
+                    'use_ssl': use_ssl,
+                    'http_auth': http_auth,
                 })
 
         # Get ElasticSearch interface
@@ -563,7 +415,7 @@ class ElasticSearch(BaseSearch):
 
     def add(self, obj):
         # Make sure the object can be indexed
-        if not self.object_can_be_indexed(obj):
+        if not class_is_indexed(obj.__class__):
             return
 
         # Get mapping
@@ -572,46 +424,32 @@ class ElasticSearch(BaseSearch):
         # Add document to index
         self.es.index(self.es_index, mapping.get_document_type(), mapping.get_document(obj), id=mapping.get_document_id(obj))
 
-    def add_bulk(self, obj_list):
-        # Group all objects by their type
-        type_set = {}
+    def add_bulk(self, model, obj_list):
+        if not class_is_indexed(model):
+            return
+
+        # Get mapping
+        mapping = ElasticSearchMapping(model)
+        doc_type = mapping.get_document_type()
+
+        # Create list of actions
+        actions = []
         for obj in obj_list:
-            # Object must be a decendant of Indexed and be a django model
-            if not self.object_can_be_indexed(obj):
-                continue
+            # Create the action
+            action = {
+                '_index': self.es_index,
+                '_type': doc_type,
+                '_id': mapping.get_document_id(obj),
+            }
+            action.update(mapping.get_document(obj))
+            actions.append(action)
 
-            # Get mapping
-            mapping = ElasticSearchMapping(obj.__class__)
-
-            # Get document type
-            doc_type = mapping.get_document_type()
-
-            # If type is currently not in set, add it
-            if doc_type not in type_set:
-                type_set[doc_type] = []
-
-            # Add document to set
-            type_set[doc_type].append((mapping.get_document_id(obj), mapping.get_document(obj)))
-
-        # Loop through each type and bulk add them
-        for type_name, type_documents in type_set.items():
-            # Get list of actions
-            actions = []
-            for doc_id, doc in type_documents:
-                action = {
-                    '_index': self.es_index,
-                    '_type': type_name,
-                    '_id': doc_id,
-                }
-                action.update(doc)
-                actions.append(action)
-
-            yield type_name, len(type_documents)
-            bulk(self.es, actions)
+        # Run the actions
+        bulk(self.es, actions)
 
     def delete(self, obj):
-        # Object must be a decendant of Indexed and be a django model
-        if not isinstance(obj, Indexed) or not isinstance(obj, models.Model):
+        # Make sure the object can be indexed
+        if not class_is_indexed(obj.__class__):
             return
 
         # Get mapping

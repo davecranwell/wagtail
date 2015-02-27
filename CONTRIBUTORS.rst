@@ -32,6 +32,18 @@ Contributors
 * Tim Heap
 * Nathan Brizendine
 * thenewguy
+* John-Scott Atlakson
+* Eric Drechsel
+* Alejandro Giacometti
+* Robert Rollins
+* linibou
+* Timo Rieber
+* Jerel Unruh
+* georgewhewell
+* Frank Wiles
+* Sebastian Spiegel
+* Alejandro Varas
+* Martin Sanders
 
 Translators
 ===========
@@ -40,6 +52,7 @@ Translators
 * Bulgarian: Lyuboslav Petrov
 * Catalan: David Llop
 * Chinese: Lihan Li, tulpar008, wwj718
+* Dutch: mahulst, Samuel Leeuwenburg
 * French: Sylvain Fankhauser
 * Galician: fooflare
 * German: Karl Sander, Johannes Spielmann

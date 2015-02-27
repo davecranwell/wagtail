@@ -150,19 +150,6 @@ Wagtail Apps
 Settings Variables (settings.py)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Authentication
---------------
-
-.. code-block:: python
-
-  LOGIN_URL = 'wagtailadmin_login'
-  LOGIN_REDIRECT_URL = 'wagtailadmin_home'
-
-These settings variables set the Django authentication system to redirect to the Wagtail admin login. If you plan to use the Django authentication module to log in non-privileged users, you should set these variables to your own login views. See `Django User Authentication`_.
-
-.. _Django User Authentication: https://docs.djangoproject.com/en/dev/topics/auth/
-
-
 Site Name
 ---------
 
@@ -273,18 +260,6 @@ Other Django Settings Used by Wagtail
 For information on what these settings do, see `Django Settings <https://docs.djangoproject.com/en/dev/ref/settings/>`__.
 
 
-Search Signal Handlers
-----------------------
-
-.. code-block:: python
-
-  from wagtail.wagtailsearch import register_signal_handlers as wagtailsearch_register_signal_handlers
-  
-  wagtailsearch_register_signal_handlers()
-
-This loads Wagtail's search signal handlers, which need to be loaded very early in the Django life cycle. While not technically a urlconf, this is a convenient place to load them. Calling this function registers signal handlers to watch for when indexed models get saved or deleted. This allows wagtailsearch to update ElasticSearch automatically.
-
-
 URL Patterns
 ------------
 
@@ -296,8 +271,6 @@ URL Patterns
   from wagtail.wagtailadmin import urls as wagtailadmin_urls
   from wagtail.wagtaildocs import urls as wagtaildocs_urls
   from wagtail.wagtailsearch.urls import frontend as wagtailsearch_frontend_urls
-
-  admin.autodiscover()
 
   urlpatterns = patterns('',
     url(r'^django-admin/', include(admin.site.urls)),
@@ -494,10 +467,6 @@ settings.py
       ('text/x-scss', 'django_libsass.SassCompiler'),
   )
 
-  # Auth settings
-  LOGIN_URL = 'wagtailadmin_login'
-  LOGIN_REDIRECT_URL = 'wagtailadmin_home'
-
   # A sample logging configuration. The only tangible logging
   # performed by this configuration is to send an email to
   # the site admins on every HTTP 500 error when DEBUG=False.
@@ -570,13 +539,6 @@ urls.py
   from wagtail.wagtailadmin import urls as wagtailadmin_urls
   from wagtail.wagtaildocs import urls as wagtaildocs_urls
   from wagtail.wagtailsearch.urls import frontend as wagtailsearch_frontend_urls
-
-  admin.autodiscover()
-
-
-  # Signal handlers
-  from wagtail.wagtailsearch import register_signal_handlers as wagtailsearch_register_signal_handlers
-  wagtailsearch_register_signal_handlers()
 
 
   urlpatterns = patterns('',

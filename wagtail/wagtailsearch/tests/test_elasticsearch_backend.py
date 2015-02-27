@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
-from wagtail.tests.utils import unittest
+import unittest
 import datetime
 import json
 
@@ -26,13 +26,13 @@ class TestElasticSearchBackend(BackendTests, TestCase):
 
     def test_filter_on_non_filterindex_field(self):
         # id is not listed in the search_fields for SearchTest; this should raise a FieldError
-        from wagtail.wagtailsearch.backends.elasticsearch import FieldError
+        from wagtail.wagtailsearch.backends.base import FieldError
 
         with self.assertRaises(FieldError):
             results = list(self.backend.search("Hello", models.SearchTest, filters=dict(id=42)))
 
     def test_filter_with_unsupported_lookup_type(self):
-        from wagtail.wagtailsearch.backends.elasticsearch import FilterError
+        from wagtail.wagtailsearch.backends.base import FilterError
 
         with self.assertRaises(FilterError):
             results = list(self.backend.search("Hello", models.SearchTest, filters=dict(title__iregex='h(ea)llo')))
@@ -89,7 +89,7 @@ class TestElasticSearchBackend(BackendTests, TestCase):
 
         # Add some test data
         obj = models.SearchTest()
-        obj.title = "Ĥéỻø"
+        obj.title = "Ĥéllø"
         obj.live = True
         obj.save()
         self.backend.add(obj)
@@ -102,6 +102,66 @@ class TestElasticSearchBackend(BackendTests, TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].id, obj.id)
+
+    def test_query_analyser(self):
+        """
+        This is testing that fields that use edgengram_analyzer as their index analyser do not
+        have it also as their query analyser
+        """
+        # Reset the index
+        self.backend.reset_index()
+        self.backend.add_type(models.SearchTest)
+        self.backend.add_type(models.SearchTestChild)
+
+        # Add some test data
+        obj = models.SearchTest()
+        obj.title = "Hello"
+        obj.live = True
+        obj.save()
+        self.backend.add(obj)
+
+        # Refresh the index
+        self.backend.refresh_index()
+
+        # Test search for "Hello"
+        results = self.backend.search("Hello", models.SearchTest.objects.all())
+
+        # Should find the result
+        self.assertEqual(len(results), 1)
+
+        # Test search for "Horse"
+        results = self.backend.search("Horse", models.SearchTest.objects.all())
+
+        # Even though they both start with the letter "H". This should not be considered a match
+        self.assertEqual(len(results), 0)
+
+    def test_search_with_hyphen(self):
+        """
+        This tests that punctuation characters are treated the same
+        way in both indexing and querying.
+
+        See: https://github.com/torchbox/wagtail/issues/937
+        """
+        # Reset the index
+        self.backend.reset_index()
+        self.backend.add_type(models.SearchTest)
+        self.backend.add_type(models.SearchTestChild)
+
+        # Add some test data
+        obj = models.SearchTest()
+        obj.title = "Hello-World"
+        obj.live = True
+        obj.save()
+        self.backend.add(obj)
+
+        # Refresh the index
+        self.backend.refresh_index()
+
+        # Test search for "Hello-World"
+        results = self.backend.search("Hello-World", models.SearchTest.objects.all())
+
+        # Should find the result
+        self.assertEqual(len(results), 1)
 
 
 class TestElasticSearchQuery(TestCase):
@@ -310,10 +370,10 @@ class TestElasticSearchMapping(TestCase):
                 'properties': {
                     'pk': {'index': 'not_analyzed', 'type': 'string', 'store': 'yes', 'include_in_all': False},
                     'content_type': {'index': 'not_analyzed', 'type': 'string', 'include_in_all': False},
-                    '_partials': {'analyzer': 'edgengram_analyzer', 'include_in_all': False, 'type': 'string'},
+                    '_partials': {'index_analyzer': 'edgengram_analyzer', 'include_in_all': False, 'type': 'string'},
                     'live_filter': {'index': 'not_analyzed', 'type': 'boolean', 'include_in_all': False},
                     'published_date_filter': {'index': 'not_analyzed', 'type': 'date', 'include_in_all': False},
-                    'title': {'type': 'string', 'include_in_all': True, 'analyzer': 'edgengram_analyzer'},
+                    'title': {'type': 'string', 'include_in_all': True, 'index_analyzer': 'edgengram_analyzer'},
                     'title_filter': {'index': 'not_analyzed', 'type': 'string', 'include_in_all': False},
                     'content': {'type': 'string', 'include_in_all': True},
                     'callable_indexed_field': {'type': 'string', 'include_in_all': True}
@@ -382,15 +442,15 @@ class TestElasticSearchMappingInheritance(TestCase):
                 'properties': {
                     # New
                     'extra_content': {'type': 'string', 'include_in_all': True},
-                    'subtitle': {'type': 'string', 'include_in_all': True, 'analyzer': 'edgengram_analyzer'},
+                    'subtitle': {'type': 'string', 'include_in_all': True, 'index_analyzer': 'edgengram_analyzer'},
 
                     # Inherited
                     'pk': {'index': 'not_analyzed', 'type': 'string', 'store': 'yes', 'include_in_all': False},
                     'content_type': {'index': 'not_analyzed', 'type': 'string', 'include_in_all': False},
-                    '_partials': {'analyzer': 'edgengram_analyzer', 'include_in_all': False, 'type': 'string'},
+                    '_partials': {'index_analyzer': 'edgengram_analyzer', 'include_in_all': False, 'type': 'string'},
                     'live_filter': {'index': 'not_analyzed', 'type': 'boolean', 'include_in_all': False},
                     'published_date_filter': {'index': 'not_analyzed', 'type': 'date', 'include_in_all': False},
-                    'title': {'type': 'string', 'include_in_all': True, 'analyzer': 'edgengram_analyzer'},
+                    'title': {'type': 'string', 'include_in_all': True, 'index_analyzer': 'edgengram_analyzer'},
                     'title_filter': {'index': 'not_analyzed', 'type': 'string', 'include_in_all': False},
                     'content': {'type': 'string', 'include_in_all': True},
                     'callable_indexed_field': {'type': 'string', 'include_in_all': True}
@@ -476,13 +536,29 @@ class TestBackendConfiguration(TestCase):
     def test_urls(self):
         # This test backwards compatibility with old URLS setting
         backend = self.ElasticSearch(params={
-            'URLS': ['http://localhost:12345', 'https://127.0.0.1:54321'],
+            'URLS': [
+                'http://localhost:12345',
+                'https://127.0.0.1:54321',
+                'http://username:password@elasticsearch.mysite.com',
+                'https://elasticsearch.mysite.com/hello',
+            ],
         })
 
-        self.assertEqual(len(backend.es_hosts), 2)
+        self.assertEqual(len(backend.es_hosts), 4)
         self.assertEqual(backend.es_hosts[0]['host'], 'localhost')
         self.assertEqual(backend.es_hosts[0]['port'], 12345)
         self.assertEqual(backend.es_hosts[0]['use_ssl'], False)
+
         self.assertEqual(backend.es_hosts[1]['host'], '127.0.0.1')
         self.assertEqual(backend.es_hosts[1]['port'], 54321)
         self.assertEqual(backend.es_hosts[1]['use_ssl'], True)
+
+        self.assertEqual(backend.es_hosts[2]['host'], 'elasticsearch.mysite.com')
+        self.assertEqual(backend.es_hosts[2]['port'], 80)
+        self.assertEqual(backend.es_hosts[2]['use_ssl'], False)
+        self.assertEqual(backend.es_hosts[2]['http_auth'], ('username', 'password'))
+
+        self.assertEqual(backend.es_hosts[3]['host'], 'elasticsearch.mysite.com')
+        self.assertEqual(backend.es_hosts[3]['port'], 443)
+        self.assertEqual(backend.es_hosts[3]['use_ssl'], True)
+        self.assertEqual(backend.es_hosts[3]['url_prefix'], '/hello')

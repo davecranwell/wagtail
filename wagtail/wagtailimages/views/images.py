@@ -1,7 +1,6 @@
 import json
 
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib import messages
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.contrib.auth.decorators import permission_required
 from django.core.exceptions import PermissionDenied
@@ -12,11 +11,14 @@ from django.http import HttpResponse
 
 from wagtail.wagtailcore.models import Site
 from wagtail.wagtailadmin.forms import SearchForm
+from wagtail.wagtailadmin import messages
 from wagtail.wagtailsearch.backends import get_search_backends
 
 from wagtail.wagtailimages.models import get_image_model, Filter
 from wagtail.wagtailimages.forms import get_image_form, URLGeneratorForm
-from wagtail.wagtailimages.utils.crypto import generate_signature
+from wagtail.wagtailimages.utils import generate_signature
+from wagtail.wagtailimages.fields import MAX_UPLOAD_SIZE
+from wagtail.wagtailimages.exceptions import InvalidFilterSpecError
 
 
 @permission_required('wagtailimages.add_image')
@@ -76,10 +78,9 @@ def index(request):
         })
 
 
-@permission_required('wagtailadmin.access_admin')  # more specific permission tests are applied within the view
 def edit(request, image_id):
     Image = get_image_model()
-    ImageForm = get_image_form()
+    ImageForm = get_image_form(Image)
 
     image = get_object_or_404(Image, id=image_id)
 
@@ -102,7 +103,9 @@ def edit(request, image_id):
             for backend in get_search_backends():
                 backend.add(image)
 
-            messages.success(request, _("Image '{0}' updated.").format(image.title))
+            messages.success(request, _("Image '{0}' updated.").format(image.title), buttons=[
+                messages.button(reverse('wagtailimages_edit_image', args=(image.id,)), _('Edit again'))
+            ])
             return redirect('wagtailimages_index')
         else:
             messages.error(request, _("The image could not be saved due to errors."))
@@ -116,14 +119,24 @@ def edit(request, image_id):
     except NoReverseMatch:
         url_generator_enabled = False
 
+    # Get file size
+    try:
+        filesize = image.file.size
+    except OSError:
+        # File doesn't exist
+        filesize = None
+        messages.error(request, _("The source image file could not be found. Please change the source or delete the image.").format(image.title), buttons=[
+            messages.button(reverse('wagtailimages_delete_image', args=(image.id,)), _('Delete'))
+        ])
+
     return render(request, "wagtailimages/images/edit.html", {
         'image': image,
         'form': form,
         'url_generator_enabled': url_generator_enabled,
+        'filesize': filesize,
     })
 
 
-@permission_required('wagtailadmin.access_admin')  # more specific permission tests are applied within the view
 def url_generator(request, image_id):
     image = get_object_or_404(get_image_model(), id=image_id)
 
@@ -146,7 +159,6 @@ def json_response(document, status=200):
     return HttpResponse(json.dumps(document), content_type='application/json', status=status)
 
 
-@permission_required('wagtailadmin.access_admin')
 def generate_url(request, image_id, filter_spec):
     # Get the image
     Image = get_image_model()
@@ -164,7 +176,9 @@ def generate_url(request, image_id, filter_spec):
         }, status=403)
 
     # Parse the filter spec to make sure its valid
-    if not Filter(spec=filter_spec).is_valid():
+    try:
+        Filter(spec=filter_spec).operations
+    except InvalidFilterSpecError:
         return json_response({
             'error': "Invalid filter spec."
         }, status=400)
@@ -179,10 +193,21 @@ def generate_url(request, image_id, filter_spec):
     except Site.DoesNotExist:
         site_root_url = Site.objects.first().root_url
 
-    return json_response({'url': site_root_url + url, 'local_url': url}, status=200)
+    # Generate preview url
+    preview_url = reverse('wagtailimages_preview', args=(image_id, filter_spec))
+
+    return json_response({'url': site_root_url + url, 'preview_url': preview_url}, status=200)
 
 
-@permission_required('wagtailadmin.access_admin')  # more specific permission tests are applied within the view
+def preview(request, image_id, filter_spec):
+    image = get_object_or_404(get_image_model(), id=image_id)
+
+    try:
+        return Filter(spec=filter_spec).run(image, HttpResponse(content_type='image/jpeg'))
+    except InvalidFilterSpecError:
+        return HttpResponse("Invalid filter spec: " + filter_spec, content_type='text/plain', status=400)
+
+
 def delete(request, image_id):
     image = get_object_or_404(get_image_model(), id=image_id)
 
@@ -201,8 +226,8 @@ def delete(request, image_id):
 
 @permission_required('wagtailimages.add_image')
 def add(request):
-    ImageForm = get_image_form()
     ImageModel = get_image_model()
+    ImageForm = get_image_form(ImageModel)
 
     if request.POST:
         image = ImageModel(uploaded_by_user=request.user)
@@ -214,7 +239,9 @@ def add(request):
             for backend in get_search_backends():
                 backend.add(image)
 
-            messages.success(request, _("Image '{0}' added.").format(image.title))
+            messages.success(request, _("Image '{0}' added.").format(image.title), buttons=[
+                messages.button(reverse('wagtailimages_edit_image', args=(image.id,)), _('Edit'))
+            ])
             return redirect('wagtailimages_index')
         else:
             messages.error(request, _("The image could not be created due to errors."))
@@ -223,10 +250,10 @@ def add(request):
 
     return render(request, "wagtailimages/images/add.html", {
         'form': form,
+        'max_filesize': MAX_UPLOAD_SIZE,
     })
 
 
-@permission_required('wagtailadmin.access_admin')
 def usage(request, image_id):
     image = get_object_or_404(get_image_model(), id=image_id)
 
