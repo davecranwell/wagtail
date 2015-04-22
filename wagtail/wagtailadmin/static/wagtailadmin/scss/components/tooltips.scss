@@ -1,8 +1,8 @@
 $tooltip-max-width:           200px;
 $tooltip-color:               #fff;
-$tooltip-bg:                  $color-grey-2;
+$tooltip-bg:                  #EEE;
 $tooltip-opacity:             1;
-$tooltip-arrow-width:         5px;
+$tooltip-arrow-width:         7px;
 $tooltip-arrow-color:         $tooltip-bg;
 $tooltip-zindex:              20;
 
@@ -12,7 +12,10 @@ $tooltip-zindex:              20;
     display: block;
     visibility: visible;
     line-height: 1.4;
-    opacity:0;
+    opacity: 0;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: $color-text-base;
 
     &.in     { opacity: $tooltip-opacity; }
     &.top    { margin-top:  -3px; padding: $tooltip-arrow-width 0; }
@@ -23,10 +26,9 @@ $tooltip-zindex:              20;
 
 // Wrapper for the tooltip content
 .tooltip-inner {
-    @include border-radius(2px);
+    @include border-radius(3px);
     max-width: $tooltip-max-width;
-    padding: 3px 8px;
-    color: $tooltip-color;
+    padding: 8px;
     text-align: center;
     text-decoration: none;
     background-color: $tooltip-bg;

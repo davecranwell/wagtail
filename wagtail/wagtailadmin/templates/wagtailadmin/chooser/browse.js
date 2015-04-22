@@ -14,4 +14,6 @@ function(modal) {
 
         return false;
     });
+
+    $('.tip').tooltip({delay:250});
 }
